@@ -14,16 +14,366 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      annotations: {
+        Row: {
+          created_at: string
+          data: Json
+          evaluation_id: string
+          id: string
+          page_no: number
+        }
+        Insert: {
+          created_at?: string
+          data: Json
+          evaluation_id: string
+          id?: string
+          page_no?: number
+        }
+        Update: {
+          created_at?: string
+          data?: Json
+          evaluation_id?: string
+          id?: string
+          page_no?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "annotations_evaluation_id_fkey"
+            columns: ["evaluation_id"]
+            isOneToOne: false
+            referencedRelation: "evaluations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      answer_sheets: {
+        Row: {
+          assigned_faculty: string | null
+          created_at: string
+          exam_date: string
+          file_path: string
+          file_type: string
+          id: string
+          register_no: string
+          semester: number
+          status: Database["public"]["Enums"]["sheet_status"]
+          student_name: string | null
+          subject_code: string
+          subject_id: string | null
+          subject_name: string
+          updated_at: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          assigned_faculty?: string | null
+          created_at?: string
+          exam_date: string
+          file_path: string
+          file_type: string
+          id?: string
+          register_no: string
+          semester: number
+          status?: Database["public"]["Enums"]["sheet_status"]
+          student_name?: string | null
+          subject_code: string
+          subject_id?: string | null
+          subject_name: string
+          updated_at?: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          assigned_faculty?: string | null
+          created_at?: string
+          exam_date?: string
+          file_path?: string
+          file_type?: string
+          id?: string
+          register_no?: string
+          semester?: number
+          status?: Database["public"]["Enums"]["sheet_status"]
+          student_name?: string | null
+          subject_code?: string
+          subject_id?: string | null
+          subject_name?: string
+          updated_at?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "answer_sheets_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      audit_logs: {
+        Row: {
+          action: string
+          created_at: string
+          details: Json | null
+          entity: string | null
+          entity_id: string | null
+          id: string
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          details?: Json | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          details?: Json | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      evaluations: {
+        Row: {
+          created_at: string
+          faculty_id: string
+          id: string
+          max_marks: number
+          sheet_id: string
+          started_at: string
+          status: Database["public"]["Enums"]["eval_status"]
+          submitted_at: string | null
+          time_taken_seconds: number | null
+          total_marks: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          faculty_id: string
+          id?: string
+          max_marks?: number
+          sheet_id: string
+          started_at?: string
+          status?: Database["public"]["Enums"]["eval_status"]
+          submitted_at?: string | null
+          time_taken_seconds?: number | null
+          total_marks?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          faculty_id?: string
+          id?: string
+          max_marks?: number
+          sheet_id?: string
+          started_at?: string
+          status?: Database["public"]["Enums"]["eval_status"]
+          submitted_at?: string | null
+          time_taken_seconds?: number | null
+          total_marks?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "evaluations_sheet_id_fkey"
+            columns: ["sheet_id"]
+            isOneToOne: true
+            referencedRelation: "answer_sheets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      faculty_subjects: {
+        Row: {
+          created_at: string
+          faculty_id: string
+          id: string
+          subject_id: string
+        }
+        Insert: {
+          created_at?: string
+          faculty_id: string
+          id?: string
+          subject_id: string
+        }
+        Update: {
+          created_at?: string
+          faculty_id?: string
+          id?: string
+          subject_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "faculty_subjects_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          department: string | null
+          email: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          department?: string | null
+          email: string
+          id: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          department?: string | null
+          email?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      question_marks: {
+        Row: {
+          created_at: string
+          evaluation_id: string
+          id: string
+          max_marks: number
+          obtained_marks: number
+          question_no: string
+          section: string | null
+        }
+        Insert: {
+          created_at?: string
+          evaluation_id: string
+          id?: string
+          max_marks: number
+          obtained_marks?: number
+          question_no: string
+          section?: string | null
+        }
+        Update: {
+          created_at?: string
+          evaluation_id?: string
+          id?: string
+          max_marks?: number
+          obtained_marks?: number
+          question_no?: string
+          section?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "question_marks_evaluation_id_fkey"
+            columns: ["evaluation_id"]
+            isOneToOne: false
+            referencedRelation: "evaluations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      students: {
+        Row: {
+          created_at: string
+          department: string | null
+          id: string
+          name: string
+          register_no: string
+          semester: number | null
+        }
+        Insert: {
+          created_at?: string
+          department?: string | null
+          id?: string
+          name: string
+          register_no: string
+          semester?: number | null
+        }
+        Update: {
+          created_at?: string
+          department?: string | null
+          id?: string
+          name?: string
+          register_no?: string
+          semester?: number | null
+        }
+        Relationships: []
+      }
+      subjects: {
+        Row: {
+          created_at: string
+          department: string | null
+          id: string
+          semester: number
+          subject_code: string
+          subject_name: string
+        }
+        Insert: {
+          created_at?: string
+          department?: string | null
+          id?: string
+          semester: number
+          subject_code: string
+          subject_name: string
+        }
+        Update: {
+          created_at?: string
+          department?: string | null
+          id?: string
+          semester?: number
+          subject_code?: string
+          subject_name?: string
+        }
+        Relationships: []
+      }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "faculty"
+      eval_status: "draft" | "submitted"
+      sheet_status: "uploaded" | "assigned" | "in_progress" | "submitted"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +500,10 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "faculty"],
+      eval_status: ["draft", "submitted"],
+      sheet_status: ["uploaded", "assigned", "in_progress", "submitted"],
+    },
   },
 } as const
