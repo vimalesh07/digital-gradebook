@@ -1,23 +1,71 @@
-import { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  Check, X, Highlighter, Pen, Eraser, Undo2, Redo2,
-  ZoomIn, ZoomOut, RotateCw, Save, Send, ArrowLeft, Plus, Trash2, Lock,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  ArrowLeft,
+  Check,
+  Expand,
+  Highlighter,
+  Loader2,
+  Minus,
+  PenLine,
+  Plus,
+  Save,
+  Send,
+  SquarePen,
+  Trash2,
+  Underline,
+  X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
-import { toast } from "sonner";
 
-type Tool = "tick" | "cross" | "highlight" | "pen" | "eraser";
-interface Stroke { tool: Tool; color: string; size: number; points: { x: number; y: number }[]; }
-interface QMark { id?: string; question_no: string; section: string; max_marks: number; obtained_marks: number; }
+type Tool = "tick" | "cross" | "underline" | "highlight" | "pen";
+type Point = { x: number; y: number };
+type Stroke = { tool: Tool; color: string; size: number; points: Point[] };
+type PageAnnotations = Record<number, Stroke[]>;
+type PageComments = Record<number, string>;
+type QMark = { id?: string; question_no: string; section: string; max_marks: number; obtained_marks: number };
 
-const COLORS: Record<Tool, string> = {
-  tick: "#16a34a", cross: "#dc2626", highlight: "#fde047", pen: "#1e3a8a", eraser: "#ffffff",
+const TOOL_META: Record<Tool, { color: string; size: number }> = {
+  tick: { color: "#16a34a", size: 3 },
+  cross: { color: "#dc2626", size: 3 },
+  underline: { color: "#4f46e5", size: 4 },
+  highlight: { color: "#f59e0b", size: 14 },
+  pen: { color: "#111827", size: 2.5 },
+};
+
+const defaultQuestions = () =>
+  Array.from({ length: 5 }).map((_, index) => ({
+    question_no: `Q${index + 1}`,
+    section: "A",
+    max_marks: 10,
+    obtained_marks: 0,
+  }));
+
+const countPdfPagesFromUrl = async (url: string) => {
+  const response = await fetch(url);
+  const text = await response.text();
+  const matches = text.match(/\/Type\s*\/Page\b/g);
+  return Math.max(matches?.length ?? 0, 1);
 };
 
 export default function EvaluateSheet() {
@@ -25,388 +73,433 @@ export default function EvaluateSheet() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const [sheet, setSheet] = useState<any>(null);
-  const [evalRow, setEvalRow] = useState<any>(null);
-  const [marks, setMarks] = useState<QMark[]>([]);
-  const [fileUrl, setFileUrl] = useState<string>("");
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [tool, setTool] = useState<Tool>("pen");
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [redoStack, setRedoStack] = useState<Stroke[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [startedAt] = useState(Date.now());
-  const isLocked = evalRow?.status === "submitted";
-  const isPdf = sheet?.file_type === "application/pdf";
-
+  const viewerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef(false);
   const currentStrokeRef = useRef<Stroke | null>(null);
+  const [sheet, setSheet] = useState<any>(null);
+  const [evalRow, setEvalRow] = useState<any>(null);
+  const [fileUrl, setFileUrl] = useState("");
+  const [pageCount, setPageCount] = useState(6);
+  const [page, setPage] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [tool, setTool] = useState<Tool>("pen");
+  const [annotations, setAnnotations] = useState<PageAnnotations>({});
+  const [comments, setComments] = useState<PageComments>({});
+  const [marks, setMarks] = useState<QMark[]>(defaultQuestions);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [startedAt] = useState(Date.now());
 
-  // Load sheet, eval, marks, signed URL
+  const isLocked = evalRow?.status === "submitted";
+  const activeStrokes = annotations[page] ?? [];
+  const grandTotal = marks.reduce((sum, mark) => sum + (Number(mark.obtained_marks) || 0), 0);
+  const grandMax = marks.reduce((sum, mark) => sum + (Number(mark.max_marks) || 0), 0);
+  const pdfSrc = useMemo(() => fileUrl ? `${fileUrl}#page=${page}&zoom=${Math.round(zoom * 100)}&toolbar=0&navpanes=0` : "", [fileUrl, page, zoom]);
+
   useEffect(() => {
     if (!sheetId || !user) return;
     (async () => {
       const { data: s } = await supabase.from("answer_sheets").select("*").eq("id", sheetId).maybeSingle();
-      if (!s) { toast.error("Sheet not found"); navigate("/faculty"); return; }
+      if (!s) {
+        toast.error("Sheet not found");
+        navigate("/faculty");
+        return;
+      }
       setSheet(s);
 
       const { data: signed } = await supabase.storage.from("answer-sheets").createSignedUrl(s.file_path, 3600);
-      if (signed) setFileUrl(signed.signedUrl);
+      if (signed?.signedUrl) {
+        setFileUrl(signed.signedUrl);
+        countPdfPagesFromUrl(signed.signedUrl).then(setPageCount).catch(() => setPageCount(6));
+      }
 
       let { data: ev } = await supabase.from("evaluations").select("*").eq("sheet_id", sheetId).maybeSingle();
       if (!ev) {
         const { data: created, error } = await supabase.from("evaluations").insert({
-          sheet_id: sheetId, faculty_id: user.id,
+          sheet_id: sheetId,
+          faculty_id: user.id,
+          max_marks: 50,
         }).select().single();
-        if (error) { toast.error(error.message); return; }
+        if (error) throw error;
         ev = created;
         await supabase.from("answer_sheets").update({ status: "in_progress" }).eq("id", sheetId);
       }
       setEvalRow(ev);
 
       const { data: qm } = await supabase.from("question_marks").select("*").eq("evaluation_id", ev.id).order("created_at");
-      setMarks((qm ?? []).map((q: any) => ({
-        id: q.id, question_no: q.question_no, section: q.section ?? "A",
-        max_marks: Number(q.max_marks), obtained_marks: Number(q.obtained_marks),
-      })));
-
-      const { data: ann } = await supabase.from("annotations").select("*").eq("evaluation_id", ev.id).maybeSingle();
-      if (ann?.data && Array.isArray((ann.data as any).strokes)) setStrokes((ann.data as any).strokes);
-    })();
-  }, [sheetId, user, navigate]);
-
-  // Draw all strokes
-  const redraw = () => {
-    const c = canvasRef.current; if (!c) return;
-    const ctx = c.getContext("2d"); if (!ctx) return;
-    ctx.clearRect(0, 0, c.width, c.height);
-    strokes.forEach((s) => drawStroke(ctx, s));
-  };
-
-  const drawStroke = (ctx: CanvasRenderingContext2D, s: Stroke) => {
-    if (s.tool === "tick" || s.tool === "cross") {
-      const p = s.points[0]; if (!p) return;
-      ctx.strokeStyle = s.color; ctx.lineWidth = 3; ctx.lineCap = "round";
-      ctx.beginPath();
-      if (s.tool === "tick") {
-        ctx.moveTo(p.x - 10, p.y); ctx.lineTo(p.x - 2, p.y + 8); ctx.lineTo(p.x + 12, p.y - 10);
-      } else {
-        ctx.moveTo(p.x - 10, p.y - 10); ctx.lineTo(p.x + 10, p.y + 10);
-        ctx.moveTo(p.x + 10, p.y - 10); ctx.lineTo(p.x - 10, p.y + 10);
+      if (qm?.length) {
+        setMarks(qm.map((q: any) => ({
+          id: q.id,
+          question_no: q.question_no,
+          section: q.section ?? "A",
+          max_marks: Number(q.max_marks),
+          obtained_marks: Number(q.obtained_marks),
+        })));
       }
-      ctx.stroke();
-      return;
-    }
-    ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = s.size;
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
-    if (s.tool === "highlight") ctx.globalAlpha = 0.35; else ctx.globalAlpha = 1;
-    ctx.beginPath();
-    s.points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-    ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+
+      const { data: annRows } = await supabase.from("annotations").select("*").eq("evaluation_id", ev.id);
+      const nextAnnotations: PageAnnotations = {};
+      const nextComments: PageComments = {};
+      annRows?.forEach((row: any) => {
+        const data = row.data as any;
+        nextAnnotations[row.page_no] = Array.isArray(data?.strokes) ? data.strokes : [];
+        if (typeof data?.comment === "string") nextComments[row.page_no] = data.comment;
+      });
+      setAnnotations(nextAnnotations);
+      setComments(nextComments);
+    })().catch((error) => toast.error(error.message ?? "Unable to load evaluation"));
+  }, [navigate, sheetId, user]);
+
+  const redraw = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    activeStrokes.forEach((stroke) => drawStroke(ctx, stroke));
   };
 
-  useEffect(() => { redraw(); }, [strokes]);
+  const resizeCanvas = () => {
+    const canvas = canvasRef.current;
+    const parent = canvas?.parentElement;
+    if (!canvas || !parent) return;
+    canvas.width = parent.clientWidth;
+    canvas.height = parent.clientHeight;
+    redraw();
+  };
 
-  // Resize canvas to overlay
   useEffect(() => {
-    const update = () => {
-      const c = canvasRef.current; if (!c) return;
-      const parent = c.parentElement; if (!parent) return;
-      c.width = parent.clientWidth;
-      c.height = parent.clientHeight;
-      redraw();
-    };
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, [fileUrl, zoom, rotation]);
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    return () => window.removeEventListener("resize", resizeCanvas);
+  }, [page, zoom, activeStrokes.length]);
 
-  const getPos = (e: React.PointerEvent) => {
-    const c = canvasRef.current!; const r = c.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  useEffect(() => { redraw(); }, [annotations, page]);
+
+  const drawStroke = (ctx: CanvasRenderingContext2D, stroke: Stroke) => {
+    const p = stroke.points[0];
+    if (!p) return;
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = stroke.size;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.globalAlpha = stroke.tool === "highlight" ? 0.35 : 1;
+
+    if (stroke.tool === "tick") {
+      ctx.beginPath();
+      ctx.moveTo(p.x - 12, p.y);
+      ctx.lineTo(p.x - 3, p.y + 10);
+      ctx.lineTo(p.x + 15, p.y - 12);
+      ctx.stroke();
+    } else if (stroke.tool === "cross") {
+      ctx.beginPath();
+      ctx.moveTo(p.x - 12, p.y - 12);
+      ctx.lineTo(p.x + 12, p.y + 12);
+      ctx.moveTo(p.x + 12, p.y - 12);
+      ctx.lineTo(p.x - 12, p.y + 12);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      stroke.points.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   };
 
-  const onDown = (e: React.PointerEvent) => {
+  const getPos = (event: React.PointerEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  const commitStroke = (stroke: Stroke) => {
+    setAnnotations((prev) => ({ ...prev, [page]: [...(prev[page] ?? []), stroke] }));
+  };
+
+  const onPointerDown = (event: React.PointerEvent) => {
     if (isLocked) return;
-    drawingRef.current = true;
-    const p = getPos(e);
+    const point = getPos(event);
+    const meta = TOOL_META[tool];
     if (tool === "tick" || tool === "cross") {
-      const s: Stroke = { tool, color: COLORS[tool], size: 3, points: [p] };
-      setStrokes((prev) => [...prev, s]); setRedoStack([]);
-      drawingRef.current = false;
+      commitStroke({ tool, color: meta.color, size: meta.size, points: [point] });
       return;
     }
-    const s: Stroke = {
-      tool, color: COLORS[tool],
-      size: tool === "highlight" ? 14 : tool === "eraser" ? 18 : 2.5,
-      points: [p],
-    };
-    currentStrokeRef.current = s;
-    setStrokes((prev) => [...prev, s]); setRedoStack([]);
+    drawingRef.current = true;
+    currentStrokeRef.current = { tool, color: meta.color, size: meta.size, points: [point] };
+    commitStroke(currentStrokeRef.current);
   };
 
-  const onMove = (e: React.PointerEvent) => {
-    if (!drawingRef.current || !currentStrokeRef.current) return;
-    const p = getPos(e);
-    currentStrokeRef.current.points.push(p);
-    setStrokes((prev) => {
-      const copy = [...prev];
-      copy[copy.length - 1] = { ...currentStrokeRef.current! };
-      return copy;
+  const onPointerMove = (event: React.PointerEvent) => {
+    if (!drawingRef.current || !currentStrokeRef.current || isLocked) return;
+    currentStrokeRef.current.points.push(getPos(event));
+    setAnnotations((prev) => {
+      const pageStrokes = [...(prev[page] ?? [])];
+      pageStrokes[pageStrokes.length - 1] = { ...currentStrokeRef.current! };
+      return { ...prev, [page]: pageStrokes };
     });
   };
 
-  const onUp = () => { drawingRef.current = false; currentStrokeRef.current = null; };
+  const onPointerUp = () => {
+    drawingRef.current = false;
+    currentStrokeRef.current = null;
+  };
 
-  const undo = () => setStrokes((prev) => {
-    if (prev.length === 0) return prev;
-    setRedoStack((r) => [...r, prev[prev.length - 1]]);
-    return prev.slice(0, -1);
-  });
-  const redo = () => setRedoStack((r) => {
-    if (r.length === 0) return r;
-    setStrokes((s) => [...s, r[r.length - 1]]);
-    return r.slice(0, -1);
-  });
-
-  const addQuestion = () =>
-    setMarks((prev) => [...prev, { question_no: `Q${prev.length + 1}`, section: "A", max_marks: 10, obtained_marks: 0 }]);
-
-  const removeQuestion = (idx: number) => setMarks((prev) => prev.filter((_, i) => i !== idx));
-
-  const updateQ = (idx: number, key: keyof QMark, val: any) =>
-    setMarks((prev) => prev.map((q, i) => i === idx ? { ...q, [key]: val } : q));
-
-  const sectionTotals: Record<string, { obtained: number; max: number }> = {};
-  marks.forEach((m) => {
-    sectionTotals[m.section] = sectionTotals[m.section] ?? { obtained: 0, max: 0 };
-    sectionTotals[m.section].obtained += Number(m.obtained_marks) || 0;
-    sectionTotals[m.section].max += Number(m.max_marks) || 0;
-  });
-  const grandTotal = Object.values(sectionTotals).reduce((a, b) => a + b.obtained, 0);
-  const grandMax = Object.values(sectionTotals).reduce((a, b) => a + b.max, 0);
-
-  const persistMarks = async () => {
-    if (!evalRow) return;
-    for (const m of marks) {
-      if (Number(m.obtained_marks) > Number(m.max_marks)) {
-        throw new Error(`${m.question_no}: marks exceed maximum`);
+  const persist = async (silent = false) => {
+    if (!evalRow || isLocked) return;
+    for (const mark of marks) {
+      if (Number(mark.obtained_marks) > Number(mark.max_marks)) {
+        toast.error(`${mark.question_no}: marks exceed maximum`);
+        throw new Error("Invalid marks");
       }
     }
-    await supabase.from("question_marks").delete().eq("evaluation_id", evalRow.id);
-    if (marks.length) {
-      const { error } = await supabase.from("question_marks").insert(
-        marks.map((m) => ({
-          evaluation_id: evalRow.id, question_no: m.question_no, section: m.section,
-          max_marks: m.max_marks, obtained_marks: m.obtained_marks,
-        }))
-      );
-      if (error) throw error;
-    }
-    await supabase.from("annotations").delete().eq("evaluation_id", evalRow.id);
-    if (strokes.length) {
-      await supabase.from("annotations").insert({
-        evaluation_id: evalRow.id, page_no: 1, data: { strokes } as any,
-      });
-    }
-  };
-
-  const saveDraft = async () => {
-    if (isLocked) return;
-    setBusy(true);
+    setSaving(true);
     try {
-      await persistMarks();
+      await supabase.from("question_marks").delete().eq("evaluation_id", evalRow.id);
+      if (marks.length) {
+        const { error } = await supabase.from("question_marks").insert(marks.map((mark) => ({
+          evaluation_id: evalRow.id,
+          question_no: mark.question_no,
+          section: mark.section,
+          max_marks: Number(mark.max_marks),
+          obtained_marks: Number(mark.obtained_marks),
+        })));
+        if (error) throw error;
+      }
+
+      await supabase.from("annotations").delete().eq("evaluation_id", evalRow.id);
+      const rows = Array.from({ length: pageCount }).map((_, index) => {
+        const pageNo = index + 1;
+        return {
+          evaluation_id: evalRow.id,
+          page_no: pageNo,
+          data: { strokes: annotations[pageNo] ?? [], comment: comments[pageNo] ?? "" } as any,
+        };
+      }).filter((row) => (row.data.strokes.length || row.data.comment));
+      if (rows.length) {
+        const { error } = await supabase.from("annotations").insert(rows);
+        if (error) throw error;
+      }
+
       const { error } = await supabase.from("evaluations").update({
-        total_marks: grandTotal, max_marks: grandMax || 100,
+        total_marks: grandTotal,
+        max_marks: grandMax || 50,
       }).eq("id", evalRow.id);
       if (error) throw error;
-      toast.success("Draft saved");
-    } catch (e: any) { toast.error(e.message); }
-    finally { setBusy(false); }
+      if (!silent) toast.success("Evaluation progress saved");
+    } finally {
+      setSaving(false);
+    }
   };
 
+  useEffect(() => {
+    if (!evalRow || isLocked) return;
+    const timer = window.setInterval(() => persist(true).catch(() => undefined), 30000);
+    return () => window.clearInterval(timer);
+  }, [evalRow, isLocked, annotations, comments, marks, pageCount]);
+
   const submitFinal = async () => {
-    if (isLocked) return;
-    if (marks.length === 0) return toast.error("Add at least one question");
-    if (!confirm("Submit final evaluation? This locks editing.")) return;
+    if (!evalRow || isLocked) return;
     setBusy(true);
     try {
-      await persistMarks();
+      await persist(true);
       const seconds = Math.round((Date.now() - startedAt) / 1000);
       const { error } = await supabase.from("evaluations").update({
-        total_marks: grandTotal, max_marks: grandMax || 100,
-        status: "submitted", submitted_at: new Date().toISOString(),
+        total_marks: grandTotal,
+        max_marks: grandMax || 50,
+        status: "submitted",
+        submitted_at: new Date().toISOString(),
         time_taken_seconds: seconds,
       }).eq("id", evalRow.id);
       if (error) throw error;
       await supabase.from("answer_sheets").update({ status: "submitted" }).eq("id", sheetId);
-      await supabase.from("audit_logs").insert({
-        user_id: user!.id, action: "submit_evaluation", entity: "evaluation",
-        entity_id: evalRow.id, details: { total: grandTotal, max: grandMax },
-      });
-      toast.success("Submitted and locked");
-      navigate("/faculty");
-    } catch (e: any) { toast.error(e.message); }
-    finally { setBusy(false); }
+      await supabase.from("audit_logs").insert([
+        {
+          user_id: user!.id,
+          action: "evaluation_completed",
+          entity: "evaluation",
+          entity_id: evalRow.id,
+          details: { register_no: sheet.register_no, subject_code: sheet.subject_code, total_marks: grandTotal, max_marks: grandMax },
+        },
+        {
+          user_id: user!.id,
+          action: "marks_provided",
+          entity: "answer_sheet",
+          entity_id: sheetId,
+          details: {
+            register_no: sheet.register_no,
+            subject_code: sheet.subject_code,
+            obtained_marks: grandTotal,
+            total_marks: grandMax || 50,
+            provided_to_user: true,
+          },
+        },
+      ]);
+      toast.success("Evaluation submitted and marks provided.");
+      navigate("/faculty/history");
+    } catch (error: any) {
+      toast.error(error.message ?? "Submit failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
-  if (!sheet) return <div className="p-8 text-muted-foreground">Loading…</div>;
+  const updateMark = (index: number, key: keyof QMark, value: string | number) =>
+    setMarks((prev) => prev.map((mark, i) => i === index ? { ...mark, [key]: value } : mark));
 
-  const tools: { id: Tool; icon: any; label: string }[] = [
-    { id: "tick", icon: Check, label: "Tick" },
-    { id: "cross", icon: X, label: "Cross" },
-    { id: "highlight", icon: Highlighter, label: "Highlight" },
-    { id: "pen", icon: Pen, label: "Pen" },
-    { id: "eraser", icon: Eraser, label: "Eraser" },
-  ];
+  const removeLastAnnotation = () =>
+    setAnnotations((prev) => ({ ...prev, [page]: (prev[page] ?? []).slice(0, -1) }));
+
+  if (!sheet) {
+    return <div className="flex min-h-[60vh] items-center justify-center text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading evaluation workspace</div>;
+  }
 
   return (
-    <div className="-m-4 flex h-[calc(100vh-3.5rem)] flex-col md:-m-6">
-      {/* Top bar */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-card px-4 py-2">
-        <Button size="sm" variant="ghost" onClick={() => navigate(-1)}><ArrowLeft className="mr-1 h-4 w-4" />Back</Button>
-        <div className="hidden h-6 w-px bg-border sm:block" />
-        <div>
-          <p className="text-sm font-semibold">{sheet.register_no} <span className="text-muted-foreground">· {sheet.subject_code}</span></p>
-          <p className="text-xs text-muted-foreground">{sheet.subject_name} · Sem {sheet.semester}</p>
+    <div className="-m-4 flex h-[calc(100vh-4rem)] flex-col overflow-hidden md:-m-6">
+      <div className="flex flex-wrap items-center gap-2 border-b bg-card px-4 py-3">
+        <Button size="sm" variant="ghost" className="rounded-xl" onClick={() => navigate(-1)}><ArrowLeft className="mr-1 h-4 w-4" />Back</Button>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{sheet.register_no} <span className="text-muted-foreground">- {sheet.subject_code}</span></p>
+          <p className="truncate text-xs text-muted-foreground">{sheet.subject_name} - 6-page / 50-mark evaluation workflow</p>
         </div>
-        {isLocked && <Badge className="ml-2 bg-success text-success-foreground"><Lock className="mr-1 h-3 w-3" />Locked</Badge>}
-        <div className="ml-auto flex gap-2">
-          <Button size="sm" variant="outline" onClick={saveDraft} disabled={isLocked || busy}>
-            <Save className="mr-1 h-4 w-4" />Save draft
+        <Badge className="ml-0 rounded-lg md:ml-2" variant={isLocked ? "secondary" : "default"}>{isLocked ? "Completed" : "In Evaluation"}</Badge>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{saving ? "Auto-saving..." : "Auto-save every 30s"}</span>
+          <Button size="sm" variant="outline" className="rounded-xl" onClick={() => persist()} disabled={isLocked || saving}>
+            <Save className="mr-1 h-4 w-4" />Save
           </Button>
-          <Button size="sm" className="bg-gradient-primary" onClick={submitFinal} disabled={isLocked || busy}>
-            <Send className="mr-1 h-4 w-4" />Submit final
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button size="sm" className="rounded-xl bg-primary hover:bg-primary/90" disabled={isLocked || busy}>
+                <Send className="mr-1 h-4 w-4" />Submit Marks
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent className="rounded-xl">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Submit evaluated answer sheet?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This stores marks, annotations, and remarks permanently, then provides the final marks in completed history.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+                <AlertDialogAction className="rounded-xl bg-primary hover:bg-primary/90" onClick={submitFinal}>Submit Evaluation</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
 
-      <div className="grid flex-1 overflow-hidden md:grid-cols-[1fr_380px]">
-        {/* LEFT: viewer + canvas */}
-        <div className="flex flex-col border-r bg-muted/30">
-          {/* viewer toolbar */}
-          <div className="flex flex-wrap items-center gap-1 border-b bg-card/80 px-3 py-2 backdrop-blur">
-            {tools.map((t) => (
-              <Button key={t.id} size="icon" variant={tool === t.id ? "default" : "ghost"}
-                className={tool === t.id ? "bg-primary" : ""}
-                onClick={() => setTool(t.id)} disabled={isLocked} title={t.label}>
-                <t.icon className="h-4 w-4" />
-              </Button>
-            ))}
-            <div className="mx-1 h-6 w-px bg-border" />
-            <Button size="icon" variant="ghost" onClick={undo} disabled={isLocked}><Undo2 className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" onClick={redo} disabled={isLocked}><Redo2 className="h-4 w-4" /></Button>
-            <div className="mx-1 h-6 w-px bg-border" />
-            <Button size="icon" variant="ghost" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}><ZoomOut className="h-4 w-4" /></Button>
-            <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
-            <Button size="icon" variant="ghost" onClick={() => setZoom((z) => Math.min(3, z + 0.1))}><ZoomIn className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" onClick={() => setRotation((r) => (r + 90) % 360)}><RotateCw className="h-4 w-4" /></Button>
-          </div>
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[1fr_380px]">
+        <div className="grid min-h-0 bg-muted/30 md:grid-cols-[96px_1fr]">
+          <aside className="hidden overflow-y-auto border-r bg-card p-3 md:block">
+            <div className="space-y-2">
+              {Array.from({ length: pageCount }).map((_, index) => (
+                <button
+                  key={index}
+                  className={`flex aspect-[3/4] w-full items-center justify-center rounded-xl border text-sm font-semibold transition hover:border-primary hover:text-primary ${page === index + 1 ? "border-primary bg-primary/10 text-primary" : "bg-background"}`}
+                  onClick={() => setPage(index + 1)}
+                >
+                  {index + 1}
+                </button>
+              ))}
+            </div>
+          </aside>
 
-          {/* viewer + overlay */}
-          <div className="relative flex-1 overflow-auto p-4">
-            <div className="relative mx-auto" style={{ width: `${zoom * 100}%`, maxWidth: 1200 }}>
-              <div className="relative" style={{ transform: `rotate(${rotation}deg)`, transformOrigin: "center" }}>
-                {fileUrl ? (
-                  isPdf ? (
-                    <iframe src={fileUrl} title="Answer sheet"
-                      className="h-[1100px] w-full rounded-md border bg-white shadow-elegant" />
-                  ) : (
-                    <img src={fileUrl} alt="Answer sheet" className="w-full rounded-md border bg-white shadow-elegant" />
-                  )
-                ) : (
-                  <div className="flex h-96 items-center justify-center rounded-md border bg-white">Loading sheet…</div>
-                )}
-                {!isPdf && (
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
-                    onPointerDown={onDown}
-                    onPointerMove={onMove}
-                    onPointerUp={onUp}
-                    onPointerLeave={onUp}
-                  />
-                )}
+          <section className="flex min-h-0 flex-col">
+            <div className="flex flex-wrap items-center gap-2 border-b bg-card/90 px-3 py-2">
+              {([
+                ["tick", Check],
+                ["cross", X],
+                ["underline", Underline],
+                ["highlight", Highlighter],
+                ["pen", PenLine],
+              ] as const).map(([id, Icon]) => (
+                <Button key={id} size="icon" variant={tool === id ? "default" : "ghost"} className="rounded-xl" onClick={() => setTool(id)} disabled={isLocked} title={id}>
+                  <Icon className="h-4 w-4" />
+                </Button>
+              ))}
+              <Button size="icon" variant="ghost" className="rounded-xl" onClick={removeLastAnnotation} disabled={isLocked}><Trash2 className="h-4 w-4" /></Button>
+              <div className="mx-1 h-6 w-px bg-border" />
+              <Button size="icon" variant="ghost" className="rounded-xl" onClick={() => setZoom((z) => Math.max(0.7, z - 0.1))}><ZoomOut className="h-4 w-4" /></Button>
+              <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
+              <Button size="icon" variant="ghost" className="rounded-xl" onClick={() => setZoom((z) => Math.min(1.8, z + 0.1))}><ZoomIn className="h-4 w-4" /></Button>
+              <div className="ml-auto flex items-center gap-2">
+                <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}><Minus className="mr-1 h-4 w-4" />Page</Button>
+                <span className="text-sm font-medium">{page} / {pageCount}</span>
+                <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page === pageCount}>Page <Plus className="ml-1 h-4 w-4" /></Button>
+                <Button size="icon" variant="ghost" className="rounded-xl" onClick={() => viewerRef.current?.requestFullscreen()}><Expand className="h-4 w-4" /></Button>
               </div>
             </div>
-            {isPdf && (
-              <p className="mt-2 text-center text-xs text-muted-foreground">
-                PDF preview shown. Annotation drawing is available for image sheets; for PDFs use the marks panel.
-              </p>
-            )}
-          </div>
+
+            <div ref={viewerRef} className="relative flex-1 overflow-auto bg-muted p-4">
+              <div className="relative mx-auto h-[1040px] max-w-4xl overflow-hidden rounded-xl border bg-white shadow-elegant" style={{ width: `${Math.round(820 * zoom)}px` }}>
+                {pdfSrc ? (
+                  <iframe key={pdfSrc} src={pdfSrc} title="PDF answer sheet" className="absolute inset-0 h-full w-full bg-white" />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-muted-foreground">Loading PDF...</div>
+                )}
+                <canvas
+                  ref={canvasRef}
+                  className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
+                  onPointerLeave={onPointerUp}
+                />
+              </div>
+            </div>
+          </section>
         </div>
 
-        {/* RIGHT: marks panel */}
-        <div className="flex flex-col overflow-hidden bg-background">
+        <aside className="flex min-h-0 flex-col border-l bg-background">
           <div className="border-b p-4">
-            <div className="flex items-baseline justify-between">
-              <h2 className="font-semibold">Marks entry</h2>
-              <Button size="sm" variant="outline" onClick={addQuestion} disabled={isLocked}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold">Smart Marks Panel</h2>
+                <p className="text-xs text-muted-foreground">Questions inferred for a 50-mark paper. Edit as needed.</p>
+              </div>
+              <Button size="sm" variant="outline" className="rounded-xl" disabled={isLocked} onClick={() => setMarks((prev) => [...prev, { question_no: `Q${prev.length + 1}`, section: "A", max_marks: 10, obtained_marks: 0 }])}>
                 <Plus className="mr-1 h-4 w-4" />Question
               </Button>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border bg-secondary/40 p-3">
-              <div>
-                <p className="text-xs text-muted-foreground">Total</p>
-                <p className="text-2xl font-bold text-primary">{grandTotal} <span className="text-base text-muted-foreground">/ {grandMax}</span></p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Sections</p>
-                <p className="text-sm font-medium">
-                  {Object.entries(sectionTotals).map(([k, v]) => (
-                    <span key={k} className="ml-2">{k}: {v.obtained}/{v.max}</span>
-                  ))}
-                </p>
-              </div>
+            <div className="mt-3 rounded-xl border bg-primary/5 p-3">
+              <p className="text-xs text-muted-foreground">Obtained / Total Marks</p>
+              <p className="text-2xl font-bold text-primary">{grandTotal} <span className="text-base text-muted-foreground">/ {grandMax || 50}</span></p>
             </div>
           </div>
 
-          <div className="flex-1 space-y-2 overflow-y-auto p-4">
-            {marks.length === 0 && (
-              <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                No questions yet. Click <strong>+ Question</strong> to start entering marks.
-              </p>
-            )}
-            {marks.map((m, i) => {
-              const over = Number(m.obtained_marks) > Number(m.max_marks);
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+            {marks.map((mark, index) => {
+              const over = Number(mark.obtained_marks) > Number(mark.max_marks);
               return (
-                <Card key={i} className={`p-3 ${over ? "border-destructive" : ""}`}>
-                  <div className="grid grid-cols-12 items-end gap-2">
-                    <div className="col-span-3">
-                      <label className="text-xs text-muted-foreground">Q.No</label>
-                      <Input value={m.question_no} disabled={isLocked} onChange={(e) => updateQ(i, "question_no", e.target.value)} />
-                    </div>
-                    <div className="col-span-2">
-                      <label className="text-xs text-muted-foreground">Sec</label>
-                      <Input value={m.section} disabled={isLocked} onChange={(e) => updateQ(i, "section", e.target.value.toUpperCase())} />
-                    </div>
-                    <div className="col-span-3">
-                      <label className="text-xs text-muted-foreground">Max</label>
-                      <Input type="number" min={0} value={m.max_marks} disabled={isLocked}
-                        onChange={(e) => updateQ(i, "max_marks", Number(e.target.value))} />
-                    </div>
-                    <div className="col-span-3">
-                      <label className="text-xs text-muted-foreground">Obtained</label>
-                      <Input type="number" min={0} value={m.obtained_marks} disabled={isLocked}
-                        onChange={(e) => updateQ(i, "obtained_marks", Number(e.target.value))} />
-                    </div>
-                    <div className="col-span-1">
-                      <Button size="icon" variant="ghost" disabled={isLocked} onClick={() => removeQuestion(i)}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
+                <Card key={index} className={`rounded-xl p-3 ${over ? "border-destructive" : ""}`}>
+                  <div className="grid grid-cols-12 gap-2">
+                    <Input className="col-span-3 rounded-xl" value={mark.question_no} disabled={isLocked} onChange={(e) => updateMark(index, "question_no", e.target.value)} aria-label="Question number" />
+                    <Input className="col-span-2 rounded-xl" value={mark.section} disabled={isLocked} onChange={(e) => updateMark(index, "section", e.target.value.toUpperCase())} aria-label="Section" />
+                    <Input className="col-span-3 rounded-xl" type="number" min={0} value={mark.max_marks} disabled={isLocked} onChange={(e) => updateMark(index, "max_marks", Number(e.target.value))} aria-label="Maximum marks" />
+                    <Input className="col-span-3 rounded-xl" type="number" min={0} value={mark.obtained_marks} disabled={isLocked} onChange={(e) => updateMark(index, "obtained_marks", Number(e.target.value))} aria-label="Obtained marks" />
+                    <Button size="icon" variant="ghost" className="col-span-1 rounded-xl" disabled={isLocked} onClick={() => setMarks((prev) => prev.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                   </div>
-                  {over && <p className="mt-1 text-xs text-destructive">Obtained exceeds max</p>}
+                  {over && <p className="mt-2 text-xs text-destructive">Obtained marks cannot exceed max marks.</p>}
                 </Card>
               );
             })}
+
+            <Card className="rounded-xl p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <SquarePen className="h-4 w-4 text-primary" />
+                <h3 className="font-medium">Page {page} Remarks</h3>
+              </div>
+              <Textarea
+                className="min-h-28 rounded-xl"
+                value={comments[page] ?? ""}
+                disabled={isLocked}
+                onChange={(e) => setComments((prev) => ({ ...prev, [page]: e.target.value }))}
+                placeholder="Add faculty remarks for this page or answer."
+              />
+            </Card>
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );
