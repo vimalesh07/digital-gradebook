@@ -5,14 +5,16 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/PasswordInput";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GraduationCap, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { PASSWORD_REQUIREMENT, passwordSchema } from "@/lib/password";
 
 const emailSchema = z.string().trim().email("Invalid email").max(255);
-const passwordSchema = z.string().min(8, "Min 8 characters").max(72);
+const loginPasswordSchema = z.string().min(1, "Password required");
 
 export default function Login() {
   const navigate = useNavigate();
@@ -41,7 +43,7 @@ export default function Login() {
     setBusy(true);
     try {
       emailSchema.parse(email);
-      passwordSchema.parse(password);
+      loginPasswordSchema.parse(password);
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
       toast.success("Welcome back");
@@ -131,7 +133,7 @@ export default function Login() {
                         Forgot password?
                       </button>
                     </div>
-                    <Input id="pw" type="password" value={password}
+                    <PasswordInput id="pw" value={password}
                       onChange={(e) => setPassword(e.target.value)} required />
                   </div>
                   <Button type="submit" className="w-full bg-gradient-primary" disabled={busy}>
@@ -170,7 +172,14 @@ export default function Login() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="spass">Password</Label>
-                    <Input id="spass" type="password" value={sPass} onChange={(e) => setSPass(e.target.value)} required minLength={8} />
+                    <PasswordInput
+                      id="spass"
+                      value={sPass}
+                      onChange={(e) => setSPass(e.target.value)}
+                      required
+                      title={PASSWORD_REQUIREMENT}
+                    />
+                    <p className="text-xs text-muted-foreground">{PASSWORD_REQUIREMENT}.</p>
                   </div>
                   <Button type="submit" className="w-full bg-gradient-primary" disabled={busy}>
                     {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
